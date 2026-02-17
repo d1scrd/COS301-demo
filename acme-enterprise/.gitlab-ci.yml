@@ -1,0 +1,100 @@
+stages:
+  - validate
+  - test
+  - integration
+  - build
+  - deploy
+
+default:
+  image: alpine:3.20
+  before_script:
+    - apk add --no-cache bash coreutils
+
+# -------------------------
+# CI: Validate (parallel)
+# -------------------------
+lint:
+  stage: validate
+  script:
+    - echo "Linting (mock)..."
+    - test -f services/payments/app.sh
+    - test -f services/auth/app.sh
+    - test -f libs/common/util.sh
+    - echo "lint ✅"
+
+# -------------------------
+# CI: Unit tests (parallel)
+# -------------------------
+unit:common:
+  stage: test
+  script:
+    - bash libs/common/test.sh
+
+unit:auth:
+  stage: test
+  script:
+    - bash services/auth/test.sh
+
+unit:payments:
+  stage: test
+  script:
+    - bash services/payments/test.sh
+
+# -------------------------
+# CI: Integration gate
+# -------------------------
+integration:
+  stage: integration
+  needs: ["lint", "unit:common", "unit:auth", "unit:payments"]
+  script:
+    - echo "Running integration (mock)..."
+    - bash services/auth/app.sh
+    - bash services/payments/app.sh
+    - echo "integration ✅"
+
+# -------------------------
+# Build artifacts (mock images)
+# -------------------------
+build:
+  stage: build
+  needs: ["integration"]
+  script:
+    - echo "Building artifacts..."
+    - mkdir -p dist
+    - tar -czf dist/auth.tar.gz services/auth libs/common
+    - tar -czf dist/payments.tar.gz services/payments libs/common
+    - echo "Artifacts created:"
+    - ls -lah dist
+  artifacts:
+    name: "dist-$CI_COMMIT_SHORT_SHA"
+    paths:
+      - dist/*.tar.gz
+    expire_in: 1 week
+
+# -------------------------
+# CD: Deploy to staging automatically (only main)
+# -------------------------
+deploy:staging:
+  stage: deploy
+  needs: ["build"]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+  script:
+    - bash infra/deploy.sh staging all
+  environment:
+    name: staging
+
+# -------------------------
+# CD: Deploy to production manually (only tags)
+# -------------------------
+deploy:production:
+  stage: deploy
+  needs: ["build"]
+  rules:
+    - if: '$CI_COMMIT_TAG'
+  when: manual
+  allow_failure: false
+  script:
+    - bash infra/deploy.sh production all
+  environment:
+    name: production
